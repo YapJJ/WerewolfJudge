@@ -139,13 +139,14 @@ class WerewolfGame:
             self.wild_child_phase() # 野孩子（仅首夜）
         self.guard_phase()          # 守卫
         self.dreamwalker_phase()    # 摄梦人
+        self.wolf_beauty_phase()    # 狼美人
         self.wolf_attack_phase()    # 狼人
         if self.night == 1:
             self.hidden_wolf_phase()# 隐狼（仅首夜）
         self.witch_phase()          # 女巫
         self.night_events()         # 结算夜晚伤害
         sim = self.night_deaths_sim() # 夜晚死亡模拟
-        if self.game_over: return   
+        if self.game_over: return True
         self.prophet_phase()        # 预言家
         self.silence_phase()        # 禁言长老
         self.hunter_phase()         # 猎人
@@ -158,30 +159,13 @@ class WerewolfGame:
         
         self.players = sim
         self.announce_night_deaths()
+        if self.game_over: return True
 
     def day_phase(self):
         self.day += 1
         self.discussion_phase()
-        
-        # 骑士技能（白天使用）
-        if not self.knight_used:
-            if self.knight_phase_day():  # 如果骑士决斗成功，直接进入夜晚
-                self.night += 1
-                self.log_event(f"\n【第 {self.night} 夜开始，天黑请闭眼】")
-                self.guard_phase() #守卫
-                self.dreamwalker_phase() # 摄梦人
-                self.wolf_attack_phase() 
-                self.witch_phase() # 女巫
-                self.night_events()  # 处理狼刀结果
-                self.prophet_phase() # 预言家
-                self.silence_phase()  # 禁言长老
-                self.hunter_phase()    # 猎人提示
-                self.wolf_king_phase()  # 狼王提示
-                self.night_deaths_sim()  # 统一处理夜间死亡
-                self.check_game_end()
-            self.discussion_phase()
-            self.voting_phase()
-            self.check_game_end()
+        self.voting_phase()
+        if self.game_over: return True 
 
 
 
@@ -210,29 +194,18 @@ class WerewolfGame:
         else: self.log_event("玩家不可以发表遗言")
         input("按Enter继续...")
 
-        for skill_type, player_id in self.delayed_skills: # 狼王&猎人开枪
-            while True: 
-                choice = input(f"玩家 {player_id} 是否发动 {skill_type} 技能？(y/n)：")
-                if choice == 'y': 
-                    if skill_type == "猎人":
-                        self.hunter_gunshot(player_id)
-                        break
-                    elif skill_type == "狼王":
-                        self.wolfking_gunshot(player_id)
-                        break
-                elif choice == 'n':
-                    self.log_event(f"玩家 {player_id} 没有发动 {skill_type} 技能")
-                    break
-                else: print("无效输入，请重试")
-        self.delayed_skills.clear()
-        
+        self.night_deaths.clear()
+
+        if self.delayed_skills:
+            self.delay_skills()
+            if self.game_over: return True
+
         # 处理警徽移交（夜间死亡的警长）
         for pid, _ in self.night_deaths:
             if pid == self.sergeant_id:
                 self.handle_sergeant_death()
-                break  # 只处理一次
-        
-        self.night_deaths.clear()
+                break
+
 
     def discussion_phase(self): # 发言阶段（仅提示顺序）# 
         if self.sergeant_id: # 发言方向
@@ -262,102 +235,158 @@ class WerewolfGame:
         # 显示存活玩家编号
         alive_ids = ", ".join([str(p.id) for p in alive_players])
         self.log_event(f"存活玩家: {alive_ids}")
-        
+
         # 法官直接输入结果
         while True:
             try:
-                vote_input = input("请输入被放逐的玩家编号（0表示平安日）：")
-                if vote_input == "0":
+                exiled_id = int(input("放逐（0表示平安日）："))
+                if exiled_id == 0:
                     self.log_event("今日平安日，无人被放逐")
                     return
-                
-                exiled_id = int(vote_input)
-                if 1 <= exiled_id <= len(self.players) and self.players[exiled_id-1].alive:
-                    self.kill_player(exiled_id, reason="放逐", time_of_death="day")
-                    
-                    # 检查炸弹人技能
-                    if self.players[exiled_id-1].role == "炸弹人":
-                        self.bomb_explode(exiled_id)
-                    return
-                else:
-                    print("无效的玩家编号或该玩家已死亡")
-            except ValueError:
-                print("请输入有效的数字")
+                elif 1 <= exiled_id <= len(self.players):
+                    if self.players[exiled_id-1].alive:
+                        self.kill_player(exiled_id, reason="放逐", time_of_death="day")
+                        if self.game_over: return True
+                        if self.players[exiled_id-1].role == "炸弹人": 
+                            bomb_explode = True
+                            break
+                        self.delay_skills()
+                        return
+                    else: print("该玩家已死亡，请重新选择")
+                else: print("无效编号，请重试")
+            except ValueError: print("请输入有效的数字")
+        
+        if bomb_explode:
+            voters = self.bomb_explode()
+            self.players, bomb_kill, extra_kill = self.bomb_death_sim(voters)
+            self.log_event(f"炸弹死亡：{','.join([i for i in bomb_kill])}")
+            if extra_kill: 
+                cupid = self.cupid_lovers
+                self.log_event(f"殉情死亡：玩家{extra_kill} 与玩家{extra_kill[1]}")
+            if self.check_game_end(self.players): return True
+            else: self.delay_skills()
 
     def bomb_explode(self, bomb_id): # 炸弹人被放逐时触发爆炸# 
         self.log_event(f"💣 玩家 {bomb_id}（炸弹人）被放逐，炸弹爆炸！")
         while True:
-            voter_input = input("投票玩家（空格分隔）：")
-            voter_ids = [int(vid) for vid in voter_input.split()]
-            if voter_ids:                
-                print(f"投票玩家：{', '.join(map(str, voter_ids))}")
-                confirm = input("是否正确？(y/n): ").strip().lower()
-                if confirm == "y": break
-                else: print("请重新输入投票玩家。")
-            else: print("没有有效的投票玩家，请重新输入")
+            try:
+                voter_input = input("投票玩家（空格分隔）：")
+                if not voter_input.strip():
+                    print("没有有效的投票玩家，请重新输入")
+                    continue
+                voter_ids = [int(vid) for vid in voter_input.split()]
+                if voter_ids: 
+                    error = [vid for vid in voter_ids if not (1 <= vid <= len(self.players)) or not self.players[vid - 1].alive]
+                    if error:
+                        print(f"请重新输入，玩家无效：{', '.join(map(str, error))}")
+                        continue
+                    print(f"投票玩家：{', '.join(map(str, voter_ids))}")
+                    confirm = input("是否正确？(y/n): ").strip().lower()
+                    if confirm == "y": return voter_ids
+                    else: print("请重新输入投票玩家。")
+                else: print("没有有效玩家，请重新输入")
+            except ValueError: print("输入无效，请重试")
 
-        # 炸死所有投票者
-        for vid in voter_ids:
-            if 1 <= vid <= len(self.players) and self.players[vid-1].alive:
-                self.kill_player(vid, reason="炸弹爆炸", time_of_death="day")
-        # 检查是否只剩炸弹人
-        alive_players = [p for p in self.players if p.alive]
-        self.check_game_end(alive_players)
+    def bomb_death_sim(self, voters): # 炸弹死亡模拟
+        temp_deaths = list(map(int, voters.split()))
+        temp_players = [p for p in self.players]
+        success_kill, extra_kill = [], None
+        while temp_deaths:
+            player = temp_deaths.pop(0)
+            simulate = next((pla for pla in temp_players if pla.id == player), None) 
+            if simulate:
+                simulate.alive = False
+                simulate.death_reason = "炸弹爆炸"
+                simulate.death_time = "day"
+                success_kill.append(player)
+                
+                if simulate.role == "猎人" or simulate.role=="狼王":
+                    self.delayed_skills.append((player, simulate.role))
 
+        if any(id in success_kill for id in self.cupid_lovers):
+            for lover in self.cupid_lovers:
+                if lover in success_kill: continue
+                lover = next((pla for pla in temp_players if pla.id == lover), None)
+                if lover:
+                    lover.alive = False
+                    lover.death_reason = "情侣殉情"
+                    lover.death_time = "day"
+                    extra_kill = lover.id
 
-    def kill_player(self, pid, reason, time_of_death):
-        # 处理玩家死亡（含殉情逻辑）# 
+        return temp_players, success_kill, extra_kill
+
+    def kill_player(self, pid, reason, time_of_death): # 处理玩家死亡# 
         p = self.players[pid-1]
-        if not p.alive:
-            self.log_event(f"玩家 {pid} 已经死亡：{p.death_reason}")
-            return
-        
-        p.alive = False
-        p.death_reason = reason
-        p.death_time = time_of_death
-        death_entry = (pid, reason)
-        
-        # 记录死亡
-        if time_of_death == "night":
-            self.night_deaths.append(death_entry)
-        else:
-            self.log_event(f"玩家 {pid} 因{reason}死亡")
-            # 白天死亡立即有遗言
-            self.log_event(f"玩家 {pid} 可以发表遗言")
-            
-            # 检查猎人或狼王技能（白天死亡）
-            if p.role == "猎人" and reason == "放逐":
-                self.hunter_gunshot(pid)
-            elif p.role == "狼王" and reason == "放逐":
-                self.wolfking_gunshot(pid)
+        success_kills = []
+        temp_kill = [(pid, reason, time_of_death)]
+        while temp_kill: 
+            player, kill_reason, time= temp_kill.pop(0)
+            kill = next((pla for pla in self.players if pla.id == player), None) 
+            kill.alive = False
+            kill.death_reason = kill_reason
+            kill.death_time = time
 
-        # 警徽处理
-        if pid == self.sergeant_id:
-            self.handle_sergeant_death()
+            self.log_event(f"玩家 {player} 死亡：{kill_reason}")
+            success_kills.append((player, time))
+
+            # 连带死亡判定
+            if kill.lover: # 情侣殉情
+                temp_kill.append((kill.lover, "情侣殉情", time))
+                self.log_event(f"情侣（玩家{player}）死亡，玩家{kill.lover} 殉情出局")
+                for p in self.players: p.lover = None
+            if kill.role == "狼美人": # 狼美人魅惑
+                charm_reason = ["女巫毒杀", "猎人枪杀", "放逐"]
+                charm = next((pla for pla in self.players if pla.is_charmed == True), None)
+                if (kill_reason in charm_reason) and (charm and charm.alive): 
+                    temp_kill.append((charm.id, "魅惑", time))
+                    self.log_event(f"狼美人（玩家{player}）被{kill_reason}，玩家{charm.id} 被魅惑出局，不能发动技能")
+            if kill.role == "摄梦人" and time=="night": # 摄梦人夜晚死亡
+                temp_kill.append((self.last_dreamwalk, "摄梦", time))
+                self.log_event(f"摄梦人（玩家{player}）在夜晚死亡，玩家{self.last_dreamwalk} 被摄梦出局")
             
-        # 狼美人技能
-        if p.is_charmed:
-            charmer = next((wp for wp in self.players if wp.role == "狼美人" and wp.alive), None)
-            if charmer:
-                charmer.is_charmed = False
-                self.log_event(f"玩家 {pid} 因狼美人技能被魅惑")
-                self.log_event(f"玩家 {charmer.id}（狼美人）死亡，连带玩家 {pid} 死亡")
-                self.kill_player(pid, reason="狼美魅惑", time_of_death=time_of_death)
-        
-        # 殉情逻辑
-        if p.lover:
-            lover_id = p.lover
-            lover = self.players[lover_id-1]
-            if lover.alive:
-                self.log_event(f"玩家 {lover_id} 因情侣殉情死亡")
-                lover.alive = False
-                if time_of_death == "night":
-                    self.night_deaths.append((lover_id, "情侣殉情"))
-                # 递归处理殉情死亡
-                self.kill_player(lover_id, reason="情侣殉情", time_of_death=time_of_death)
+            # 猎人 & 狼王
+            if kill.role=="猎人":
+                gunshot_reason = ["魅惑", "女巫毒杀"]
+                if kill_reason not in gunshot_reason:
+                    self.delayed_skills.append("猎人", kill.id)
+            elif kill.role=="狼王":
+                gunshot_reason = ["魅惑", "女巫毒杀","摄梦", "连续摄梦"]
+                if kill_reason not in gunshot_reason:
+                    self.delayed_skills.append("狼王", kill.id)
+
+        if not(kill.role=="炸弹人" and kill_reason=="放逐"): 
+            self.check_game_end(self.players)
+            if self.game_over: return True
+
+        # 遗言判定
+        last_word = ""
+        for player, time in success_kills:
+            if time == "day" or (time=="night" and self.night==1):
+                if last_word: last_word += ", "
+                last_word += str(player)
+            if player == self.sergeant_id:
+                self.handle_sergeant_death()
+        if last_word: 
+            self.log_event(f"玩家可以发表遗言：{last_word}")
+            input("按Enter继续...")
+
+    def delay_skills(self): # 狼王&猎人开枪
+        while self.delayed_skills:
+            skill_type, player_id = self.delayed_skills.pop(0) 
+            if skill_type=="猎人": self.hunter_gunshot(player_id)
+            elif skill_type=="狼王": self.wolfking_gunshot(player_id)
+            if self.game_over: return
 
     def hunter_gunshot(self, hunter_id): # 猎人开枪技能# 
         hunter = self.players[hunter_id-1]
+        while True:
+            choice = input(f"玩家 {hunter_id} 是否发动 猎人 技能？(y/n)")
+            if choice == 'y': break
+            elif choice =='n': 
+                self.log_event(f"玩家 {hunter_id} 没有选择发动技能")
+                return
+            else: print("输入无效，请重试")
+
         self.log_event(f"猎人玩家 {hunter_id} 发动开枪技能")
         while True:
             try:
@@ -369,14 +398,22 @@ class WerewolfGame:
                     if not self.players[target-1].alive:
                         print("该玩家已死亡，请重新选择。")
                         continue
-                    # self.kill_player(target, reason="猎人枪杀", time_of_death=hunter.death_time)
-                    # hunter.can_use_skill = False
+                    self.kill_player(target, reason="猎人枪杀", time_of_death=hunter.death_time)
+                    self.hunter_skill = False
                     return
                 else: print("无效编号,请重试")
             except ValueError: print("输入无效，请重试")
 
     def wolfking_gunshot(self, wolfking_id): # 狼王开枪技能# 
         wolfking = self.players[wolfking_id-1]
+        while True: 
+            choice = input(f"玩家 {wolfking_id} 是否发动 狼王 技能？(y/n)：")
+            if choice == 'y': break
+            elif choice == 'n': 
+                self.log_event(f"玩家 {wolfking_id} 没有选择发动技能")
+                return
+            else: print("无效输入，请重试")
+            
         self.log_event(f"狼王玩家 {wolfking_id} 发动开枪技能")
         while True:
             try:
@@ -387,8 +424,8 @@ class WerewolfGame:
                 elif 1 <= target <= len(self.players): 
                     if not self.players[target-1].alive:
                         print("该玩家已死亡，请重新选择。")
-                    # self.kill_player(target, reason="狼王枪杀", time_of_death=wolfking.death_time)
-                    # wolfking.can_use_skill = False
+                    self.kill_player(target, reason="狼王枪杀", time_of_death=wolfking.death_time)
+                    self.wolfking_skill = False
                     return
                 else: print("无效编号,请重试")
             except ValueError: print("请输入有效的数字")
@@ -497,6 +534,33 @@ class WerewolfGame:
             except ValueError: print("请输入有效数字。")
         self.close_eyes("摄梦人")
 
+    def wolf_beauty_phase(self): # 狼美人行动阶段#
+        for p in self.players: p.is_charmed = False
+        beauty = [p for p in self.players if p.role == "狼美人"]
+        if not beauty: return
+        self.log_event("狼美人请睁眼，选择今晚要魅惑的对象（可不选）")
+        if not [p for p in beauty if p.alive]:
+            self.log_event("狼美人已经死亡，无法魅惑")
+            self.close_eyes("狼美人")
+            return
+        
+        while True:
+            try:
+                target = int(input("魅惑（0表示不魅惑）："))
+                if target == 0:
+                    self.log_event("狼美人选择不魅惑任何玩家")
+                    break
+                elif 1 <= target <= len(self.players):
+                    if not self.players[target-1].alive:
+                        print("该玩家已死亡，请重新选择。")
+                        continue
+                    self.players[target-1].is_charmed = True
+                    self.log_event(f"狼美人魅惑了玩家 {target}")
+                    break
+                else: print("无效编号。")
+            except ValueError: print("请输入有效数字。")
+        self.close_eyes("狼美人")
+
     def wolf_attack_phase(self): # 狼人行动阶段# 
         wolves = [p for p in self.players if p.camp == "狼人" and p.alive]
         self.log_event("狼人请睁眼，选择今晚要刀杀的玩家（可空刀）")
@@ -521,7 +585,7 @@ class WerewolfGame:
                     self.wolf_target = target
                     self.log_event(f"狼人选择刀杀玩家 {target}")
                     break
-                else: print("无效编号。")
+                else: print("无效编号，请重试")
             except ValueError: print("请输入有效数字。")
         self.close_eyes("狼人")
 
@@ -624,12 +688,18 @@ class WerewolfGame:
                 simulate.alive = False
                 simulate.death_reason = reason
                 simulate.death_time = "night"
+                
                 if simulate.role == "摄梦人":
                     temp_deaths.append((self.last_dreamwalk, "摄梦"))
                 if simulate.role == "猎人" and reason == "女巫毒杀":
                     self.hunter_skill = False
                 if simulate.role == "狼王" and (reason=="女巫毒杀" or reason=="摄梦" or reason=="连续摄梦"):
                     self.wolfking_skill = False
+                if simulate.role == "狼美人" and (reason=="女巫毒杀"):
+                    charm = next((pla for pla in self.players if pla.is_charmed == True), None)
+                    if charm: temp_deaths.append((charm.id, "魅惑"))
+                if simulate.lover:
+                    temp_deaths.append((simulate.lover, "情侣殉情"))
         self.check_game_end(temp_players)
         return temp_players
 
@@ -915,10 +985,7 @@ if __name__ == "__main__":
     game = WerewolfGame()
     game.setup_game()
     game.check_sergeant_option()
-
-    game.night_phase()
-    game.day_phase()
-    
+    while True:
+        if game.night_phase(): break
+        if game.day_phase(): break
     game.game_summary()
-
-
