@@ -1,5 +1,6 @@
 # WerewolfJudge
 (Work still in progress, will finish current plans ASAP)
+(Debug under progress, submit issues or pull requests to contribute)
 To-do:
 骑士白天技能
 狼人自爆
