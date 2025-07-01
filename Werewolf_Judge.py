@@ -126,8 +126,10 @@ class WerewolfGame:
             if choice.lower() == 'y':
                 self.log_event("本局游戏 有 警长")
                 self.sergeant = True
+                return
             elif choice.lower() == 'n': 
                 self.log_event("本局游戏 没有 警长")
+                return
             else: print("无效输入，请重试")
 
     def night_phase(self):
